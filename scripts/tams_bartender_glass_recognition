@@ -1,0 +1,690 @@
+#!/usr/bin/env python
+
+import sys
+import rospy
+import cv2
+from std_msgs.msg import String
+from sensor_msgs.msg import Image
+from cv_bridge import CvBridge, CvBridgeError
+import PIL.Image
+import numpy
+import numpy as np
+import time
+import math
+import scipy.spatial
+import random
+import sensor_msgs.msg
+#import image_geometry
+#import depth_image_proc
+import sklearn.linear_model
+import visualization_msgs.msg
+import tf.transformations
+#import moveit_commander
+#import stl
+#import pyassimp
+import rospkg
+import geometry_msgs.msg
+import shape_msgs.msg
+import moveit_msgs.msg
+
+rospack = rospkg.RosPack()
+
+glass_mesh_vertices = [ ]
+glass_mesh_faces = [ ]
+obj_file = rospack.get_path("tams_bartender_recognition") + "/meshes/glass.obj"
+for line in open(obj_file):
+    tokens = line.split()
+    if len(tokens) < 4:
+        continue
+    if tokens[0] == "v":
+        glass_mesh_vertices.append([float(tokens[1]), float(tokens[2]), float(tokens[3])])
+    if tokens[0] == "f":
+        glass_mesh_faces.append([int(tokens[1]), int(tokens[2]), int(tokens[3])])
+#print glass_mesh_vertices, glass_mesh_faces
+
+glass_mesh_marker_points = [ ]
+for i in np.reshape(glass_mesh_faces, len(glass_mesh_faces) * 3):
+    p = geometry_msgs.msg.Point()
+    p.x = glass_mesh_vertices[i - 1][0]
+    p.y = glass_mesh_vertices[i - 1][1]
+    p.z = glass_mesh_vertices[i - 1][2]
+    glass_mesh_marker_points.append(p)
+#print "glass_mesh_marker_points", glass_mesh_marker_points
+
+'''
+glass_mesh = shape_msgs.msg.Mesh()
+for v in glass_mesh_vertices:
+    p = geometry_msgs.msg.Point()
+    p.x = v[0]
+    p.y = v[1]
+    p.z = v[2]
+    glass_mesh.vertices.append(p)
+for f in glass_mesh_faces:
+    t = shape_msgs.msg.MeshTriangle()
+    t.vertex_indices = [f[0] - 1, f[1] - 1, f[2] - 1]
+    glass_mesh.triangles.append(t)
+'''
+
+glass_mesh = shape_msgs.msg.Mesh()
+for i in np.reshape(glass_mesh_faces, len(glass_mesh_faces) * 3):
+    p = geometry_msgs.msg.Point()
+    p.x = glass_mesh_vertices[i - 1][0]
+    p.y = glass_mesh_vertices[i - 1][1]
+    p.z = glass_mesh_vertices[i - 1][2]
+    glass_mesh.vertices.append(p)
+for i in range(len(glass_mesh_faces)):
+    t = shape_msgs.msg.MeshTriangle()
+    t.vertex_indices = [i * 3 + 0, i * 3 + 1, i * 3 + 2]
+    glass_mesh.triangles.append(t)
+
+bridge = CvBridge()
+
+rospy.init_node("ir_capture", anonymous=True)
+
+ir_image = False
+def ir_callback(data):
+    global ir_image
+    try:
+        ir_image = bridge.imgmsg_to_cv2(data)
+    except CvBridgeError as e:
+        #print(e)
+        return
+
+ir_sub = rospy.Subscriber("/camera/ir/image", Image, ir_callback)
+
+glasses_pub = rospy.Publisher("glasses", visualization_msgs.msg.MarkerArray, queue_size=2)
+
+collision_object_pub = rospy.Publisher("/collision_object", moveit_msgs.msg.CollisionObject, queue_size=2)
+
+frame_id = "xtion_depth_optical_frame"
+#frame_id = "world"
+
+depth_image = False
+def depth_callback(data):
+    global depth_image
+    try:
+        depth_image = bridge.imgmsg_to_cv2(data)
+    except CvBridgeError as e:
+        #print(e)
+        return
+depth_sub = rospy.Subscriber("/camera/depth/image_rect", Image, depth_callback)
+
+depth_info = False
+def depth_info_callback(info):
+    global depth_info
+    depth_info = info
+depth_info_sub = rospy.Subscriber("/camera/depth/camera_info", sensor_msgs.msg.CameraInfo, depth_info_callback)
+
+kernels = [ ]
+if False:
+    #rx = 20
+    #ry = 15
+    #open = 1.2
+    #height = 10
+    #shift = 2
+    kernel_sum = False
+    for i in range(2000):
+        rx = random.uniform(10, 50)
+        ry = random.uniform(rx * 0.5, rx)
+        open = random.uniform(1.0, 1.3)
+        shift = random.uniform(-2, 2)
+        height = random.uniform(0.0, rx * 0.7)
+        kernel = np.zeros((200, 200))
+        points = [ ]
+        for a in np.arange(0, math.pi * 2, 0.1):
+            points.append((math.sin(a) * rx * open - shift, math.cos(a) * ry * open - height))
+            points.append((math.sin(a) * rx / open + shift, math.cos(a) * ry / open + height))
+        points = np.array(points)
+        #points = np.transpose(points)
+        #points = np.array([points])
+        points = points.astype(int)
+        #print(points)
+        points = cv2.convexHull(points)
+        #points = scipy.spatial.ConvexHull(points)
+        #points = np.array(points) + np.array(np.repeat([kernel.shape[1] / 2, kernel.shape[0] / 2], points.shape[0], axis=1))
+        points[:,:,0] += kernel.shape[1] / 2
+        points[:,:,1] += kernel.shape[0] / 2
+        #print(points)
+        cv2.drawContours(kernel,np.array([points]).astype(int),0,(1.0,0,0),-1)
+        a = cv2.GaussianBlur(kernel, (0, 0), 3, 3)
+        b = cv2.GaussianBlur(kernel, (0, 0), 4, 4)
+        kernel = a / np.mean(a) - b / np.mean(b)
+        kernel = kernel * 0.3 / np.max(kernel)
+        #cv2.imshow("kernel", kernel * 0.5 + 0.5)
+        #cv2.waitKey(0)
+        #kernels.append(kernel)
+        if kernel_sum is False:
+            kernel_sum = kernel
+        else:
+            kernel_sum = kernel_sum + kernel
+    kernel_sum = kernel_sum * 0.1 / np.sqrt(np.var(kernel_sum))
+    #cv2.imshow("kernel", kernel_sum * 0.5 + 0.5)
+
+
+
+params = cv2.SimpleBlobDetector_Params()
+
+params.minDistBetweenBlobs = 5
+
+params.filterByColor = True
+params.blobColor = 0
+
+params.minThreshold = 0;
+params.maxThreshold = 255;
+params.thresholdStep = 8
+
+params.filterByArea = True
+params.minArea = 30*30
+params.maxArea = 200*200
+
+params.filterByCircularity = True
+params.minCircularity = 0.3
+
+params.filterByConvexity = True
+params.minConvexity = 0.3
+
+params.filterByInertia = True
+params.minInertiaRatio = 0.3
+
+detector = cv2.SimpleBlobDetector_create(params)
+
+def medianBlur(image, r):
+    image = image.astype(float)
+    lo = np.min(image)
+    hi = np.max(image)
+    image = (image - lo) * (1.0 / (hi - lo))
+    image = image * 255
+    image = image.astype(np.uint8)
+    image = cv2.medianBlur(image, r)
+    image = image.astype(float)
+    image = image * (1.0 / 255)
+    image = image * (hi - lo) + lo
+    return image
+
+def grow(image):
+    for i in range(16):
+        image[image == 0] = np.roll(image, +1, 0)[image == 0]
+        image[image == 0] = np.roll(image, -1, 0)[image == 0]
+        image[image == 0] = np.roll(image, +1, 1)[image == 0]
+        image[image == 0] = np.roll(image, -1, 1)[image == 0]
+    return image
+
+ransac = sklearn.linear_model.RANSACRegressor(residual_threshold=0.001, stop_probability=0.9)
+
+while not rospy.is_shutdown():
+
+    #cv2.waitKey(1)
+
+    if ir_image is False: continue
+    if depth_image is False: continue
+    if depth_info is False: continue
+
+
+
+    image = ir_image.copy()
+    image = image.astype(float)
+    #image = image * 0.2 / np.mean(image)
+    image = image / np.max(image)
+
+
+
+    image = cv2.GaussianBlur(image, (0, 0), 3, 3)
+    image = medianBlur(image, 51)
+
+    #image = cv2.erode(image, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)), iterations=20)
+
+    a = image
+    #cv2.imshow("image0", image)
+
+    image = ir_image.copy()
+    image = image.astype(float)
+    image = image / np.max(image)
+    #image = cv2.resize(image, (0,0), fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
+    #image = image / np.mean(image)
+
+    #image = (image - cv2.GaussianBlur(image, (0, 0), 100, 100)) * 0.5 + 0.
+
+    image = image * 0.2 / cv2.GaussianBlur(image, (0, 0), 100, 100)
+
+    #image = image / np.max(image)
+
+    raw = image.copy()
+
+
+    #dots = (image == cv2.dilate(image, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)), iterations=1)).astype(float)
+
+    '''
+    dots = image * 0
+
+    dots[image > np.roll(image, +1, 0)] += 1
+    dots[image > np.roll(image, -1, 0)] += 1
+
+    dots[image > np.roll(image, +1, 1)] += 1
+    dots[image > np.roll(image, -1, 1)] += 1
+
+    dots = dots >= 2
+
+    #cv2.imshow("dots", dots * 0.25)
+    '''
+
+    #fg = raw * dots
+    #bg = raw * (1.0 - dots)
+
+    #fg = cv2.dilate(fg, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)), iterations=4)
+    #bg = cv2.dilate(bg, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)), iterations=4)
+
+    #fg = grow(fg)
+    #bg = grow(bg)
+
+    #fg = medianBlur(fg, 51)
+    #bg = medianBlur(bg, 51)
+    #image = medianBlur(image, 51)
+
+    #cv2.imshow("fg", fg)
+    #cv2.imshow("bg", bg)
+    #cv2.imshow("img", image)
+
+    #image = image - bg + 0.2
+
+
+    #image = image / np.sqrt(np.var(image)) * 0.1 + 0.5
+    #image = np.multiply(image, image)
+
+    for i in range(2):
+        image = image - cv2.GaussianBlur(image, (0, 0), 1, 1)
+        image = np.abs(image)
+
+
+    image_sharper = image.copy()
+    image_sharper = cv2.GaussianBlur(image_sharper, (0, 0), 3, 3)
+    image_sharper = medianBlur(image_sharper, 11)
+
+    #image = cv2.GaussianBlur(image, (0, 0), 16, 16)
+    #image = cv2.medianBlur(image, 15)
+    #image = cv2.erode(image, np.ones((3,3), np.uint8), iterations=1)
+    #image = cv2.dilate(image, np.ones((3,3), np.uint8), iterations=8)
+    #image = image / np.mean(image)
+    #image = image * 0.2
+    image = cv2.GaussianBlur(image, (0, 0), 5, 5)
+    #image = image / np.max(image)
+    #image = (image * 255).astype(np.uint8)
+    #image = medianBlur(image, 41)
+    #image = medianBlur(image, 41)
+    image = medianBlur(image, 41)
+    #image = medianBlur(image, 31)
+    #image = medianBlur(image, 31)
+    #image = cv2.medianBlur(image, 71)
+    #image = image.astype(float)
+    #image = image / np.max(image)
+    #b = image
+
+    #image = image + 0.5 - a * 0.2
+
+    #image = image + np.abs(a - 0.5) * 0.3
+
+    #image = image.astype(float)
+    #image = (image - np.min(image)) / (np.max(image) - np.min(image))
+    #image = (image - a) * 0.5 + 0.5
+    #image = (image - np.min(image)) / (np.max(image) - np.min(image))
+    #image = (image * 255).astype(np.uint8)
+
+    #image = medianBlur(image, 51)
+
+    image = (image - np.min(image)) / (np.max(image) - np.min(image))
+
+    blob_image = image
+
+    image = (image * 255).astype(np.uint8)
+
+    #image = cv2.threshold(image, 80, 255, cv2.THRESH_BINARY)
+
+    #mask = image < 127
+    #image[:,:] = 255
+    #image[mask] = 0
+
+
+
+    keypoints = detector.detect(image)
+
+
+    r = raw.copy()
+    #r = cv2.GaussianBlur(r, (0, 0), 1, 1)
+    r = cv2.dilate(r, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)), iterations=3)
+    #r = cv2.GaussianBlur(r, (0, 0), 2, 2)
+    #r = medianBlur(r, 5)
+    r = r - np.min(r)
+    #cv2.imshow("r", r)
+    keypoints2 = [ ]
+    rejectedKeypoints = [ ]
+    for p in keypoints:
+        mask = image * 0
+        cv2.circle(mask, (int(p.pt[0]), int(p.pt[1])), int(p.size * 0.5), (1,0,0), -1)
+        a = np.sum((mask > 0).astype(float))
+        b = np.sum(np.multiply((r <= 0.15).astype(float), (mask > 0).astype(float)))
+        #print(a, b)
+
+
+        mask = image * 0
+        cv2.circle(mask, (int(p.pt[0]), int(p.pt[1])), int(p.size * 0.3), (1,0,0), 2)
+        c = np.sum(mask * image) / np.sum(mask)
+        cv2.circle(mask, (int(p.pt[0]), int(p.pt[1])), int(p.size * 0.8), (1,0,0), 2)
+        d = np.sum(mask * image) / np.sum(mask)
+
+        if b <= a * 0.2 and c * 1.5 < d:
+        #if b <= 0:
+            keypoints2.append(p)
+        else:
+            rejectedKeypoints.append(p)
+    keypoints = keypoints2
+
+
+    #for p in keypoints:
+        #print(p.pt[0], p.pt[1], p.size)
+    #print
+
+    #cv2.imshow("image", image)
+
+
+
+    image_sharper = (image_sharper - np.min(image_sharper)) / (np.max(image_sharper) - np.min(image_sharper))
+    image_sharper = (image_sharper * 255).astype(np.uint8)
+
+    image_sharper = np.dstack((image_sharper, image_sharper, image_sharper))
+
+    '''
+    #cv2.imshow("sharper", image_sharper)
+    objects = np.zeros(image.shape,np.uint8)
+    for p in keypoints:
+        #a = (p.pt[0], p.pt[1] + p.size * 0.25)
+        #b = (p.pt[0], p.pt[1] + p.size * 0.75)
+        #print(a, b)
+        size = p.size * 1.5
+        rect = (int(p.pt[0] - size), int(p.pt[1] - size), int(size * 2), int(size * 2))
+        bgdModel = np.zeros((1,65),np.float64)
+        fgdModel = np.zeros((1,65),np.float64)
+        mask = np.zeros(image.shape,np.uint8)
+        cv2.grabCut(image_sharper, mask, rect, bgdModel, fgdModel, 5, cv2.GC_INIT_WITH_RECT)
+        objects[mask == 2] = 255
+    #cv2.imshow("mask", objects)
+    '''
+
+    '''
+    segmentation = np.ones(image.shape, np.uint8)
+    for i in range(len(keypoints)):
+        p = keypoints[i]
+        cv2.circle(segmentation, (int(p.pt[0]), int(p.pt[1])), int(p.size * 1.5), (0,0,0), -1)
+    for i in range(len(keypoints)):
+        p = keypoints[i]
+        cv2.circle(segmentation, (int(p.pt[0]), int(p.pt[1])), int(p.size * 0.25), (i + 1,0,0), -1)
+    segmentation = segmentation.astype(np.int32)
+    segmentation = cv2.watershed(image_sharper, segmentation)
+    #cv2.imshow("segmentation", segmentation.astype(np.float) * 0.1 * raw)
+    #cv2.imshow("segmentation", np.dstack((raw, segmentation.astype(float) * 0.2, raw)))
+    continue
+    '''
+
+
+
+    image = (raw * 255).astype(np.uint8)
+    image = cv2.drawKeypoints(image, keypoints, np.array([]), (0,255,0), cv2.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS)
+    #image = cv2.drawKeypoints(image, rejectedKeypoints, np.array([]), (0,0,255), cv2.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS)
+
+
+    #for p in keypoints:
+    #    cv2.circle(image, (int(p.pt[0]), int(p.pt[1])), int(p.size * 0.5), (255,0,0), -1)
+
+    #cv2.imshow("glasses", image)
+
+    #cv2.imshow("5", raw * blob_image)
+
+
+    image = (blob_image * 255).astype(np.uint8)
+    image = cv2.drawKeypoints(image, keypoints, np.array([]), (0,255,0), cv2.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS)
+    #cv2.imshow("blobs", image)
+
+    #image2 = image * 0.0
+    #for kernel in kernels:
+    #    #image2 = np.minimum(image2, cv2.filter2D(image, kernel))
+    #    v = cv2.filter2D(image, -1, kernel)
+    #    #image2[v < image2] = v[v < image2]
+    #    image2 += v
+    #    #image2 = image2 + cv2.filter2D(image, -1, kernel)
+    #image2 = cv2.filter2D(image, -1, kernel_sum)
+    #cv2.imshow("image2", (image2 - np.mean(image2)) * 0.01 / np.sqrt(np.var(image2)) + 0.5)
+    #cv2.imshow("image2", (image2 - np.min(image2)) / (np.max(image2) - np.min(image2)))
+
+
+    #image = (b - a * 2.0) * 0.5 + 0.5
+    #cv2.imshow("d", image)
+
+    view_to_px = np.reshape(depth_info.K, (3,3,))
+    px_to_view = np.linalg.inv(view_to_px)
+
+    #points = np.zeros((depth_image.shape[0], depth_image.shape[1], 3))
+    #points[:,:,0] = np.repeat([np.arange(0, depth_image.shape[1])], depth_image.shape[0], 0)
+    #points[:,:,1] = np.reshape(np.repeat(np.arange(0, depth_image.shape[0]), depth_image.shape[1], 0), depth_image.shape)
+    #points[:,:,2] = depth_image
+    #points = np.matmul(px_to_view, points)
+    ##points[:,:] = px_to_view * points[:,:]
+    #print(points)
+
+    #print(px_to_view)
+    #print(depth_info)
+
+    points = np.zeros((depth_image.shape[0], depth_image.shape[1], 3))
+    points[:,:,0] = np.multiply(depth_image, np.repeat([np.arange(0, depth_image.shape[1])], depth_image.shape[0], 0) * px_to_view[0, 0] + px_to_view[0, 2])
+    points[:,:,1] = np.multiply(depth_image, np.reshape(np.repeat(np.arange(0, depth_image.shape[0]), depth_image.shape[1], 0), depth_image.shape) * px_to_view[1, 1] + px_to_view[1, 2])
+    points[:,:,2] = depth_image
+
+    normals = np.cross(np.roll(points, +2, 0) - np.roll(points, -2, 0), np.roll(points, +2, 1) - np.roll(points, -2, 1))
+
+    norms = np.linalg.norm(normals, axis=2)
+    normals[:,:,0] = normals[:,:,0] / norms
+    normals[:,:,1] = normals[:,:,1] / norms
+    normals[:,:,2] = normals[:,:,2] / norms
+
+    normals[np.isnan(normals)] = 0.0
+    normals = cv2.GaussianBlur(normals, (0, 0), 3, 3)
+
+    norms = np.linalg.norm(normals, axis=2)
+    normals[:,:,0] = normals[:,:,0] / norms
+    normals[:,:,1] = normals[:,:,1] / norms
+    normals[:,:,2] = normals[:,:,2] / norms
+
+    pointlist = np.reshape(points.copy(), (points.shape[0] * points.shape[1], points.shape[2]))
+    pointlist = pointlist[np.isfinite(pointlist[:,0]),:]
+    pointlist = pointlist[np.isfinite(pointlist[:,1]),:]
+    pointlist = pointlist[np.isfinite(pointlist[:,2]),:]
+    #print(pointlist)
+
+    if len(pointlist) < 8: continue
+
+    #print("a")
+    #ransac = sklearn.linear_model.RANSACRegressor(residual_threshold=0.01, stop_probability=0.9)
+    ransac.fit(pointlist[:,0:2], pointlist[:,2:3])
+    #print("b")
+
+    points1 = points.copy()
+
+    #cv2.imshow("points", points * 0.5 + 0.5)
+    #cv2.imshow("normals", normals * -0.5 + 0.5)
+    #cv2.imshow("points", points[:,:,2])
+
+    pointlist = np.reshape(points.copy(), (points.shape[0] * points.shape[1], points.shape[2]))
+    pointlist[np.logical_not(np.isfinite(pointlist))] = 0.0
+    pointlist[:,2:3] = ransac.predict(pointlist[:,0:2])
+    points2 = np.reshape(pointlist, points.shape)
+    #cv2.imshow("points2", points2 * 0.5 + 0.5)
+
+    #cv2.imshow("pointsdiff", (points2 - points1) * 10.0 + 0.5)
+
+
+
+    plane_points_xy = np.array([[0,0], [-0.01,0.01], [0.01,0.01]])
+    plane_points_z = ransac.predict(plane_points_xy)
+    #print("z", plane_points_z)
+    plane_points = np.zeros((3, 3))
+    plane_points[:,0] = plane_points_xy[:,0]
+    plane_points[:,1] = plane_points_xy[:,1]
+    plane_points[:,2] = plane_points_z[:,0]
+    #print(plane_points)
+    plane_normal = np.cross(plane_points[2] - plane_points[0], plane_points[1] - plane_points[0])
+    plane_normal = plane_normal / np.linalg.norm(plane_normal)
+    #print(plane_normal)
+    #print(np.dot(plane_normal, plane_points[0]))
+    #print(plane_points[0])
+    plane_point = plane_normal * np.dot(plane_normal, plane_points[0])
+    #print(plane_point)
+    #print(np.dot(plane_normal, plane_points[0]))
+    #print(np.dot(plane_normal, plane_points[1]))
+    #print(np.dot(plane_normal, plane_points[2]))
+
+    points3 = points.copy()
+    points3[:,:,0] = points[:,:,0] - plane_point[0]
+    points3[:,:,1] = points[:,:,1] - plane_point[1]
+    points3[:,:,2] = points[:,:,2] - plane_point[2]
+    #cv2.imshow("diffs", points3[:,:,2] * 0.5 + 0.5)
+    dist = points3[:,:,0] * plane_normal[0] + points3[:,:,1] * plane_normal[1] + points3[:,:,2] * plane_normal[2]
+    #cv2.imshow("dist", dist * 0.5 * 10 + 0.5)
+
+    rays = np.zeros((depth_image.shape[0], depth_image.shape[1], 3))
+    rays[:,:,0] = np.repeat([np.arange(0, depth_image.shape[1])], depth_image.shape[0], 0) * px_to_view[0, 0] + px_to_view[0, 2]
+    rays[:,:,1] = np.reshape(np.repeat(np.arange(0, depth_image.shape[0]), depth_image.shape[1], 0), depth_image.shape) * px_to_view[1, 1] + px_to_view[1, 2]
+    rays[:,:,2] = 1.0
+
+
+    plane_points = rays.copy()
+    plane_points[:,:,0] *= 1.0 / np.dot(rays, plane_normal) * np.dot(plane_normal, plane_point)
+    plane_points[:,:,1] *= 1.0 / np.dot(rays, plane_normal) * np.dot(plane_normal, plane_point)
+    plane_points[:,:,2] *= 1.0 / np.dot(rays, plane_normal) * np.dot(plane_normal, plane_point)
+
+    #cv2.imshow("plane points", plane_points * 0.5 + 0.5)
+
+    #cv2.imshow("plane points diff", (plane_points - points1) * 0.5 * 10 + 0.5)
+
+    plane_points_projected = plane_points.copy()
+    plane_points_projected[:,:,0] /= plane_points_projected[:,:,2]
+    plane_points_projected[:,:,1] /= plane_points_projected[:,:,2]
+    plane_points_projected[:,:,2] /= plane_points_projected[:,:,2]
+
+    above_plane_points_projected = plane_points + plane_normal * 0.01
+    above_plane_points_projected[:,:,0] /= above_plane_points_projected[:,:,2]
+    above_plane_points_projected[:,:,1] /= above_plane_points_projected[:,:,2]
+    above_plane_points_projected[:,:,2] /= above_plane_points_projected[:,:,2]
+
+    normals_projected = above_plane_points_projected - plane_points_projected
+    normals_projected_norms = np.linalg.norm(normals_projected, axis=2)
+    normals_projected[:,:,0] /= normals_projected_norms
+    normals_projected[:,:,1] /= normals_projected_norms
+    normals_projected[:,:,2] /= normals_projected_norms
+    #cv2.imshow("normals projected", normals_projected * 0.5 + 0.5)
+
+
+
+    image = (blob_image * 255).astype(np.uint8)
+    image = cv2.drawKeypoints(image, keypoints, np.array([]), (0,255,0), cv2.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS)
+    for p in keypoints:
+        l = p.size
+        a = p.pt
+        b = (
+            int(a[0] + normals_projected[a[1], a[0], 0] * -l),
+            int(a[1] + normals_projected[a[1], a[0], 1] * -l),
+            )
+        c = (
+            int(a[0] + normals_projected[a[1], a[0], 0] * +l),
+            int(a[1] + normals_projected[a[1], a[0], 1] * +l),
+            )
+        cv2.line(image, b, c, (0,255,0))
+    #cv2.imshow("test", image)
+
+
+    glass_height = 0.1
+    glass_radius = 0.035
+
+    #v_z = np.array([0,0,1])
+    v_z = -plane_normal
+    v_x = np.cross([0,1,0], v_z)
+    v_y = np.cross(v_z, v_x)
+    #print("x", v_x)
+    #print("y", v_y)
+    #print("z", v_z)
+
+    mat = np.zeros([4,4])
+    mat[0:3,0] = v_x
+    mat[0:3:,1] = v_y
+    mat[0:3:,2] = v_z
+    mat[3,3] = 1.0
+    #print("mat", mat)
+
+    quat = tf.transformations.quaternion_from_matrix(mat)
+
+    marker_array = visualization_msgs.msg.MarkerArray()
+    for i in range(len(keypoints)):
+        p = keypoints[i]
+        l = p.size * 0.5
+        #position_px = (p.pt[0], p.pt[1] + l * 0.5)
+        position_px = (p.pt[0] + normals_projected[p.pt[1], p.pt[0], 0] * l, p.pt[1] + normals_projected[p.pt[1], p.pt[0], 1] * l)
+        #position_px = (position_px[0] - 13, position_px[1])
+        #position_px = p.pt
+        #position_px = position_px[:2]
+        #print(position_px)
+        if position_px[0] < 0 or position_px[1] < 0 or position_px[0] >= plane_points.shape[1] or position_px[1] >= plane_points.shape[0]:
+            continue
+        position = plane_points[position_px[1], position_px[0]]
+
+        #offset = position / np.linalg.norm(position) * glass_radius
+        #offset -= plane_normal * np.dot(plane_normal, offset)
+        #print("offset", offset)
+        #position += offset
+        #print("position", position)
+
+        offset = position.copy()
+        offset -= plane_normal * np.dot(plane_normal, offset)
+        offset = offset / np.linalg.norm(offset) * glass_radius
+        position += offset
+
+        position += plane_normal * glass_height * -0.5
+
+        marker = visualization_msgs.msg.Marker()
+        marker.header.frame_id = frame_id
+        marker.header.stamp = rospy.get_rostime()
+        #marker.type = visualization_msgs.msg.Marker.CYLINDER
+        marker.type = visualization_msgs.msg.Marker.TRIANGLE_LIST
+        marker.points = glass_mesh_marker_points
+        marker.action = visualization_msgs.msg.Marker.ADD
+        marker.id = i
+        marker.ns = "glasses"
+        marker.lifetime.secs = 4.0
+        #marker.scale.x = glass_radius * 2
+        #marker.scale.y = glass_radius * 2
+        #marker.scale.z = glass_height
+        marker.scale.x = 1.0
+        marker.scale.y = 1.0
+        marker.scale.z = 1.0
+        marker.pose.position.x = position[0]
+        marker.pose.position.y = position[1]
+        marker.pose.position.z = position[2]
+        marker.pose.orientation.x = quat[0]
+        marker.pose.orientation.y = quat[1]
+        marker.pose.orientation.z = quat[2]
+        marker.pose.orientation.w = quat[3]
+        marker.color.g = 1.0
+        marker.color.a = 1.0
+        marker_array.markers.append(marker)
+
+        object = moveit_msgs.msg.CollisionObject()
+        object.header.frame_id = frame_id
+        object.mesh_poses.append(marker.pose)
+        object.meshes.append(glass_mesh)
+        object.id = "glass_" + str(i)
+        object.operation = moveit_msgs.msg.CollisionObject.ADD
+        collision_object_pub.publish(object)
+
+    for i in range(len(keypoints), 10):
+        object = moveit_msgs.msg.CollisionObject()
+        object.header.frame_id = frame_id
+        object.id = "glass_" + str(i)
+        object.operation = moveit_msgs.msg.CollisionObject.REMOVE
+        collision_object_pub.publish(object)
+
+    glasses_pub.publish(marker_array)
