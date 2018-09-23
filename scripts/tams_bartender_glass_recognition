@@ -31,7 +31,7 @@ rospack = rospkg.RosPack()
 
 glass_mesh_vertices = [ ]
 glass_mesh_faces = [ ]
-obj_file = rospack.get_path("tams_bartender_recognition") + "/meshes/glass.obj"
+obj_file = rospack.get_path("tams_bartender_glass_recognition") + "/meshes/glass.obj"
 for line in open(obj_file):
     tokens = line.split()
     if len(tokens) < 4:
