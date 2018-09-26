@@ -48,6 +48,8 @@ for line in open(obj_file):
 
 show_images = False
 
+check_message_timestamps = True
+
 glass_mesh_marker_points = [ ]
 for i in np.reshape(glass_mesh_faces, len(glass_mesh_faces) * 3):
     p = geometry_msgs.msg.Point()
@@ -92,7 +94,7 @@ apply_planning_scene = rospy.ServiceProxy("apply_planning_scene", moveit_msgs.sr
 ir_image_x = False
 def ir_callback(data):
     global ir_image_x
-    if data.header.stamp.secs < action_start_time.secs:
+    if check_message_timestamps and data.header.stamp.secs < action_start_time.secs:
         print "ir image too old"
         return
     try:
@@ -111,7 +113,7 @@ frame_id = "xtion_depth_optical_frame"
 depth_image_x = False
 def depth_callback(data):
     global depth_image_x
-    if data.header.stamp.secs < action_start_time.secs:
+    if check_message_timestamps and data.header.stamp.secs < action_start_time.secs:
         print "depth image too old"
         return
     try:
@@ -123,7 +125,7 @@ def depth_callback(data):
 depth_info_x = False
 def depth_info_callback(info):
     global depth_info_x
-    if info.header.stamp.secs < action_start_time.secs:
+    if check_message_timestamps and info.header.stamp.secs < action_start_time.secs:
         print "depth info too old"
         return
     depth_info_x = info
