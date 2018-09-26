@@ -296,7 +296,7 @@ while not rospy.is_shutdown():
 
         continue
 
-    print "bla"
+    #print "bla"
 
     image = ir_image.copy()
     image = image.astype(float)
@@ -328,7 +328,7 @@ while not rospy.is_shutdown():
     raw = image.copy()
 
 
-    print "1"
+    #print "1"
 
     #dots = (image == cv2.dilate(image, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)), iterations=1)).astype(float)
 
@@ -502,7 +502,7 @@ while not rospy.is_shutdown():
     continue
     '''
 
-    print 0
+    #print 0
 
     image = (raw * 255).astype(np.uint8)
     image = cv2.drawKeypoints(image, keypoints, np.array([]), (0,255,0), cv2.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS)
@@ -598,7 +598,7 @@ while not rospy.is_shutdown():
     if show_images: cv2.imshow("pointsdiff", (points2 - points1) * 10.0 + 0.5)
 
 
-    print 1
+    #print 1
 
 
     plane_points_xy = np.array([[0,0], [-0.01,0.01], [0.01,0.01]])
@@ -660,7 +660,7 @@ while not rospy.is_shutdown():
     normals_projected[:,:,2] /= normals_projected_norms
     if show_images: cv2.imshow("normals projected", normals_projected * 0.5 + 0.5)
 
-    print "a"
+    #print "a"
 
 
     '''
@@ -681,7 +681,7 @@ while not rospy.is_shutdown():
     if show_images: cv2.imshow("test", image)
     '''
 
-    print "b"
+    #print "b"
 
     glass_height = 0.1
     glass_radius = 0.035
@@ -703,7 +703,7 @@ while not rospy.is_shutdown():
 
     quat = tf.transformations.quaternion_from_matrix(mat)
 
-    print "x"
+    #print "x"
 
     marker_array = visualization_msgs.msg.MarkerArray()
     for i in range(len(keypoints)):
@@ -777,7 +777,7 @@ while not rospy.is_shutdown():
         scene.world.collision_objects.append(object)
 
         rs = apply_planning_scene.call(scene)
-        print rs
+        #print rs
 
         if depth_sub is not False: depth_sub.unregister()
         if depth_info_sub is not False: depth_info_sub.unregister()
