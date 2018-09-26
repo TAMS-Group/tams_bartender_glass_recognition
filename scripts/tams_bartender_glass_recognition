@@ -262,7 +262,7 @@ def grow(image):
         image[image == 0] = np.roll(image, -1, 1)[image == 0]
     return image
 
-ransac = sklearn.linear_model.RANSACRegressor(residual_threshold=0.001, stop_probability=0.9)
+ransac = sklearn.linear_model.RANSACRegressor(residual_threshold=0.001, stop_probability=0.999)
 
 while not rospy.is_shutdown():
 
