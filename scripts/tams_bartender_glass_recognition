@@ -690,16 +690,16 @@ while not rospy.is_shutdown():
 
     #v_z = np.array([0,0,1])
     v_z = -plane_normal
-    v_x = np.cross([0,1,0], v_z)
+    v_x = np.cross([1,0,0], v_z)
     v_y = np.cross(v_z, v_x)
     #print("x", v_x)
     #print("y", v_y)
     #print("z", v_z)
 
     mat = np.zeros([4,4])
-    mat[0:3,0] = v_x
-    mat[0:3:,1] = v_y
-    mat[0:3:,2] = v_z
+    mat[0:3,0] = v_x / np.linalg.norm(v_x)
+    mat[0:3:,1] = v_y / np.linalg.norm(v_y)
+    mat[0:3:,2] = v_z / np.linalg.norm(v_z)
     mat[3,3] = 1.0
     #print("mat", mat)
 
@@ -767,7 +767,7 @@ while not rospy.is_shutdown():
         marker.header.stamp = rospy.get_rostime()
         object.mesh_poses.append(marker.pose)
         object.meshes.append(glass_mesh)
-        object.id = "glass_" + str(i)
+        object.id = "glass"
         object.operation = moveit_msgs.msg.CollisionObject.ADD
         '''
         collision_object_pub.publish(object)
@@ -793,7 +793,7 @@ while not rospy.is_shutdown():
         depth_info_x = False
 
         result = tiago_bartender_msgs.msg.DetectGlassResult()
-        result.detected_glass = "glass_" + str(i)
+        result.detected_glass = "glass"
         action_server.set_succeeded(result)
 
         break;
