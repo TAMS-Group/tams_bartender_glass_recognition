@@ -296,7 +296,7 @@ while not rospy.is_shutdown():
 
         continue
 
-    #print "bla"
+    print "bla"
 
     image = ir_image.copy()
     image = image.astype(float)
@@ -327,6 +327,8 @@ while not rospy.is_shutdown():
 
     raw = image.copy()
 
+
+    print "1"
 
     #dots = (image == cv2.dilate(image, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)), iterations=1)).astype(float)
 
@@ -500,7 +502,7 @@ while not rospy.is_shutdown():
     continue
     '''
 
-
+    print 0
 
     image = (raw * 255).astype(np.uint8)
     image = cv2.drawKeypoints(image, keypoints, np.array([]), (0,255,0), cv2.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS)
@@ -596,6 +598,8 @@ while not rospy.is_shutdown():
     if show_images: cv2.imshow("pointsdiff", (points2 - points1) * 10.0 + 0.5)
 
 
+    print 1
+
 
     plane_points_xy = np.array([[0,0], [-0.01,0.01], [0.01,0.01]])
     plane_points_z = ransac.predict(plane_points_xy)
@@ -656,8 +660,10 @@ while not rospy.is_shutdown():
     normals_projected[:,:,2] /= normals_projected_norms
     if show_images: cv2.imshow("normals projected", normals_projected * 0.5 + 0.5)
 
+    print "a"
 
 
+    '''
     image = (blob_image * 255).astype(np.uint8)
     image = cv2.drawKeypoints(image, keypoints, np.array([]), (0,255,0), cv2.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS)
     for p in keypoints:
@@ -673,7 +679,9 @@ while not rospy.is_shutdown():
             )
         cv2.line(image, b, c, (0,255,0))
     if show_images: cv2.imshow("test", image)
+    '''
 
+    print "b"
 
     glass_height = 0.1
     glass_radius = 0.035
@@ -695,13 +703,16 @@ while not rospy.is_shutdown():
 
     quat = tf.transformations.quaternion_from_matrix(mat)
 
+    print "x"
+
     marker_array = visualization_msgs.msg.MarkerArray()
     for i in range(len(keypoints)):
         p = keypoints[i]
         l = p.size * 0.5
+        if p.pt[0] < 0 or p.pt[1] < 0 or p.pt[0] >= plane_points.shape[1] or p.pt[1] >= plane_points.shape[0]: continue
         #position_px = (p.pt[0], p.pt[1] + l * 0.5)
-        position_px = (p.pt[0] + normals_projected[p.pt[1], p.pt[0], 0] * l, p.pt[1] + normals_projected[p.pt[1], p.pt[0], 1] * l)
-        #position_px = (position_px[0] - 13, position_px[1])
+        position_px = (p.pt[0] + normals_projected[int(p.pt[1]), int(p.pt[0]), 0] * l, p.pt[1] + normals_projected[int(p.pt[1]), int(p.pt[0]), 1] * l)
+        position_px = (int(position_px[0]), int(position_px[1]))
         #position_px = p.pt
         #position_px = position_px[:2]
         #print(position_px)
