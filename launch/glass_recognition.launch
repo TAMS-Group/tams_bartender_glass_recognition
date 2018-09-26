@@ -1,0 +1,8 @@
+<launch>
+  <node
+    pkg="tams_bartender_glass_recognition"
+    type="tams_bartender_glass_recognition"
+    name="tams_bartender_glass_recognition"
+    output="screen">
+  </node>
+</launch>

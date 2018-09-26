@@ -14,20 +14,24 @@ import math
 import scipy.spatial
 import random
 import sensor_msgs.msg
-#import image_geometry
-#import depth_image_proc
 import sklearn.linear_model
+import threading
 import visualization_msgs.msg
 import tf.transformations
-#import moveit_commander
-#import stl
-#import pyassimp
 import rospkg
 import geometry_msgs.msg
 import shape_msgs.msg
 import moveit_msgs.msg
+import moveit_msgs.srv
+import tiago_bartender_msgs.msg
+import actionlib
+import moveit_msgs.msg
 
 rospack = rospkg.RosPack()
+
+action_start_time = False
+
+action_timeout = False
 
 glass_mesh_vertices = [ ]
 glass_mesh_faces = [ ]
@@ -41,6 +45,8 @@ for line in open(obj_file):
     if tokens[0] == "f":
         glass_mesh_faces.append([int(tokens[1]), int(tokens[2]), int(tokens[3])])
 #print glass_mesh_vertices, glass_mesh_faces
+
+show_images = False
 
 glass_mesh_marker_points = [ ]
 for i in np.reshape(glass_mesh_faces, len(glass_mesh_faces) * 3):
@@ -81,16 +87,19 @@ bridge = CvBridge()
 
 rospy.init_node("ir_capture", anonymous=True)
 
-ir_image = False
-def ir_callback(data):
-    global ir_image
-    try:
-        ir_image = bridge.imgmsg_to_cv2(data)
-    except CvBridgeError as e:
-        #print(e)
-        return
+apply_planning_scene = rospy.ServiceProxy("apply_planning_scene", moveit_msgs.srv.ApplyPlanningScene)
 
-ir_sub = rospy.Subscriber("/camera/ir/image", Image, ir_callback)
+ir_image_x = False
+def ir_callback(data):
+    global ir_image_x
+    if data.header.stamp.secs < action_start_time.secs:
+        print "ir image too old"
+        return
+    try:
+        ir_image_x = bridge.imgmsg_to_cv2(data)
+    except CvBridgeError as e:
+        print(e)
+        return
 
 glasses_pub = rospy.Publisher("glasses", visualization_msgs.msg.MarkerArray, queue_size=2)
 
@@ -99,21 +108,63 @@ collision_object_pub = rospy.Publisher("/collision_object", moveit_msgs.msg.Coll
 frame_id = "xtion_depth_optical_frame"
 #frame_id = "world"
 
-depth_image = False
+depth_image_x = False
 def depth_callback(data):
-    global depth_image
-    try:
-        depth_image = bridge.imgmsg_to_cv2(data)
-    except CvBridgeError as e:
-        #print(e)
+    global depth_image_x
+    if data.header.stamp.secs < action_start_time.secs:
+        print "depth image too old"
         return
-depth_sub = rospy.Subscriber("/camera/depth/image_rect", Image, depth_callback)
+    try:
+        depth_image_x = bridge.imgmsg_to_cv2(data)
+    except CvBridgeError as e:
+        print(e)
+        return
 
-depth_info = False
+depth_info_x = False
 def depth_info_callback(info):
-    global depth_info
-    depth_info = info
-depth_info_sub = rospy.Subscriber("/camera/depth/camera_info", sensor_msgs.msg.CameraInfo, depth_info_callback)
+    global depth_info_x
+    if info.header.stamp.secs < action_start_time.secs:
+        print "depth info too old"
+        return
+    depth_info_x = info
+
+ir_sub = False
+depth_sub = False
+depth_info_sub = False
+
+print threading.current_thread()
+
+action_server = actionlib.SimpleActionServer(name="detect_glass_action", ActionSpec=tiago_bartender_msgs.msg.DetectGlassAction, auto_start=False)
+def action_goal_callback():
+    global depth_sub, depth_info_sub, ir_sub, ir_image, depth_image, depth_info, action_start_time, action_timeout
+    print "action new goal"
+    print threading.current_thread()
+    goal = action_server.accept_new_goal()
+    action_start_time = rospy.get_rostime()
+    action_timeout = action_start_time + goal.timeout
+    depth_sub = rospy.Subscriber("/xtion/depth/image_rect", Image, depth_callback)
+    depth_info_sub = rospy.Subscriber("/xtion/depth/camera_info", sensor_msgs.msg.CameraInfo, depth_info_callback)
+    ir_sub = rospy.Subscriber("/xtion/ir/image", Image, ir_callback)
+    depth_image_x = False
+    ir_image_x = False
+    depth_info_x = False
+action_server.register_goal_callback(action_goal_callback)
+def action_preempt_callback():
+    global depth_sub, depth_info_sub, ir_sub, ir_image, depth_image, depth_info
+    print "action preempted"
+    print threading.current_thread()
+    action_server.set_preempted()
+    if depth_sub is not False: depth_sub.unregister()
+    if depth_info_sub is not False: depth_info_sub.unregister()
+    if ir_sub is not False: ir_sub.unregister()
+    depth_sub = False
+    depth_info_sub = False
+    ir_sub = False
+    depth_image_x = False
+    ir_image_x = False
+    depth_info_x = False
+action_server.register_preempt_callback(action_preempt_callback)
+action_server.start()
 
 kernels = [ ]
 if False:
@@ -150,7 +201,7 @@ if False:
         b = cv2.GaussianBlur(kernel, (0, 0), 4, 4)
         kernel = a / np.mean(a) - b / np.mean(b)
         kernel = kernel * 0.3 / np.max(kernel)
-        #cv2.imshow("kernel", kernel * 0.5 + 0.5)
+        if show_images: cv2.imshow("kernel", kernel * 0.5 + 0.5)
         #cv2.waitKey(0)
         #kernels.append(kernel)
         if kernel_sum is False:
@@ -158,7 +209,7 @@ if False:
         else:
             kernel_sum = kernel_sum + kernel
     kernel_sum = kernel_sum * 0.1 / np.sqrt(np.var(kernel_sum))
-    #cv2.imshow("kernel", kernel_sum * 0.5 + 0.5)
+    if show_images: cv2.imshow("kernel", kernel_sum * 0.5 + 0.5)
 
 
 
@@ -213,13 +264,39 @@ ransac = sklearn.linear_model.RANSACRegressor(residual_threshold=0.001, stop_pro
 
 while not rospy.is_shutdown():
 
-    #cv2.waitKey(1)
+    if show_images: cv2.waitKey(1)
 
-    if ir_image is False: continue
-    if depth_image is False: continue
-    if depth_info is False: continue
+    ir_image = ir_image_x
+    depth_image = depth_image_x
+    depth_info = depth_info_x
 
+    #print "a"
 
+    if ir_image is False or depth_image is False or depth_info is False:
+        #print "no image"
+        rospy.sleep(0.1)
+        continue
+
+    #print "b"
+
+    if rospy.get_rostime() > action_timeout:
+
+        if depth_sub is not False: depth_sub.unregister()
+        if depth_info_sub is not False: depth_info_sub.unregister()
+        if ir_sub is not False: ir_sub.unregister()
+        depth_sub = False
+        depth_info_sub = False
+        ir_sub = False
+
+        ir_image_x = False
+        depth_image_x = False
+        depth_info_x = False
+
+        action_server.set_aborted()
+
+        continue
+
+    #print "bla"
 
     image = ir_image.copy()
     image = image.astype(float)
@@ -234,7 +311,7 @@ while not rospy.is_shutdown():
     #image = cv2.erode(image, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)), iterations=20)
 
     a = image
-    #cv2.imshow("image0", image)
+    if show_images: cv2.imshow("image0", image)
 
     image = ir_image.copy()
     image = image.astype(float)
@@ -264,7 +341,7 @@ while not rospy.is_shutdown():
 
     dots = dots >= 2
 
-    #cv2.imshow("dots", dots * 0.25)
+    if show_images: cv2.imshow("dots", dots * 0.25)
     '''
 
     #fg = raw * dots
@@ -280,9 +357,9 @@ while not rospy.is_shutdown():
     #bg = medianBlur(bg, 51)
     #image = medianBlur(image, 51)
 
-    #cv2.imshow("fg", fg)
-    #cv2.imshow("bg", bg)
-    #cv2.imshow("img", image)
+    #if show_images: cv2.imshow("fg", fg)
+    #if show_images: cv2.imshow("bg", bg)
+    #if show_images: cv2.imshow("img", image)
 
     #image = image - bg + 0.2
 
@@ -353,7 +430,7 @@ while not rospy.is_shutdown():
     #r = cv2.GaussianBlur(r, (0, 0), 2, 2)
     #r = medianBlur(r, 5)
     r = r - np.min(r)
-    #cv2.imshow("r", r)
+    if show_images: cv2.imshow("r", r)
     keypoints2 = [ ]
     rejectedKeypoints = [ ]
     for p in keypoints:
@@ -382,7 +459,7 @@ while not rospy.is_shutdown():
         #print(p.pt[0], p.pt[1], p.size)
     #print
 
-    #cv2.imshow("image", image)
+    if show_images: cv2.imshow("image", image)
 
 
 
@@ -392,7 +469,7 @@ while not rospy.is_shutdown():
     image_sharper = np.dstack((image_sharper, image_sharper, image_sharper))
 
     '''
-    #cv2.imshow("sharper", image_sharper)
+    if show_images: cv2.imshow("sharper", image_sharper)
     objects = np.zeros(image.shape,np.uint8)
     for p in keypoints:
         #a = (p.pt[0], p.pt[1] + p.size * 0.25)
@@ -405,7 +482,7 @@ while not rospy.is_shutdown():
         mask = np.zeros(image.shape,np.uint8)
         cv2.grabCut(image_sharper, mask, rect, bgdModel, fgdModel, 5, cv2.GC_INIT_WITH_RECT)
         objects[mask == 2] = 255
-    #cv2.imshow("mask", objects)
+    if show_images: cv2.imshow("mask", objects)
     '''
 
     '''
@@ -418,8 +495,8 @@ while not rospy.is_shutdown():
         cv2.circle(segmentation, (int(p.pt[0]), int(p.pt[1])), int(p.size * 0.25), (i + 1,0,0), -1)
     segmentation = segmentation.astype(np.int32)
     segmentation = cv2.watershed(image_sharper, segmentation)
-    #cv2.imshow("segmentation", segmentation.astype(np.float) * 0.1 * raw)
-    #cv2.imshow("segmentation", np.dstack((raw, segmentation.astype(float) * 0.2, raw)))
+    if show_images: cv2.imshow("segmentation", segmentation.astype(np.float) * 0.1 * raw)
+    if show_images: cv2.imshow("segmentation", np.dstack((raw, segmentation.astype(float) * 0.2, raw)))
     continue
     '''
 
@@ -433,14 +510,14 @@ while not rospy.is_shutdown():
     #for p in keypoints:
     #    cv2.circle(image, (int(p.pt[0]), int(p.pt[1])), int(p.size * 0.5), (255,0,0), -1)
 
-    #cv2.imshow("glasses", image)
+    if show_images: cv2.imshow("glasses", image)
 
-    #cv2.imshow("5", raw * blob_image)
+    if show_images: cv2.imshow("5", raw * blob_image)
 
 
     image = (blob_image * 255).astype(np.uint8)
     image = cv2.drawKeypoints(image, keypoints, np.array([]), (0,255,0), cv2.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS)
-    #cv2.imshow("blobs", image)
+    if show_images: cv2.imshow("blobs", image)
 
     #image2 = image * 0.0
     #for kernel in kernels:
@@ -450,12 +527,12 @@ while not rospy.is_shutdown():
     #    image2 += v
     #    #image2 = image2 + cv2.filter2D(image, -1, kernel)
     #image2 = cv2.filter2D(image, -1, kernel_sum)
-    #cv2.imshow("image2", (image2 - np.mean(image2)) * 0.01 / np.sqrt(np.var(image2)) + 0.5)
-    #cv2.imshow("image2", (image2 - np.min(image2)) / (np.max(image2) - np.min(image2)))
+    #if show_images: cv2.imshow("image2", (image2 - np.mean(image2)) * 0.01 / np.sqrt(np.var(image2)) + 0.5)
+    #if show_images: cv2.imshow("image2", (image2 - np.min(image2)) / (np.max(image2) - np.min(image2)))
 
 
     #image = (b - a * 2.0) * 0.5 + 0.5
-    #cv2.imshow("d", image)
+    #if show_images: cv2.imshow("d", image)
 
     view_to_px = np.reshape(depth_info.K, (3,3,))
     px_to_view = np.linalg.inv(view_to_px)
@@ -506,17 +583,17 @@ while not rospy.is_shutdown():
 
     points1 = points.copy()
 
-    #cv2.imshow("points", points * 0.5 + 0.5)
-    #cv2.imshow("normals", normals * -0.5 + 0.5)
-    #cv2.imshow("points", points[:,:,2])
+    if show_images: cv2.imshow("points", points * 0.5 + 0.5)
+    if show_images: cv2.imshow("normals", normals * -0.5 + 0.5)
+    if show_images: cv2.imshow("points", points[:,:,2])
 
     pointlist = np.reshape(points.copy(), (points.shape[0] * points.shape[1], points.shape[2]))
     pointlist[np.logical_not(np.isfinite(pointlist))] = 0.0
     pointlist[:,2:3] = ransac.predict(pointlist[:,0:2])
     points2 = np.reshape(pointlist, points.shape)
-    #cv2.imshow("points2", points2 * 0.5 + 0.5)
+    if show_images: cv2.imshow("points2", points2 * 0.5 + 0.5)
 
-    #cv2.imshow("pointsdiff", (points2 - points1) * 10.0 + 0.5)
+    if show_images: cv2.imshow("pointsdiff", (points2 - points1) * 10.0 + 0.5)
 
 
 
@@ -543,9 +620,9 @@ while not rospy.is_shutdown():
     points3[:,:,0] = points[:,:,0] - plane_point[0]
     points3[:,:,1] = points[:,:,1] - plane_point[1]
     points3[:,:,2] = points[:,:,2] - plane_point[2]
-    #cv2.imshow("diffs", points3[:,:,2] * 0.5 + 0.5)
+    if show_images: cv2.imshow("diffs", points3[:,:,2] * 0.5 + 0.5)
     dist = points3[:,:,0] * plane_normal[0] + points3[:,:,1] * plane_normal[1] + points3[:,:,2] * plane_normal[2]
-    #cv2.imshow("dist", dist * 0.5 * 10 + 0.5)
+    if show_images: cv2.imshow("dist", dist * 0.5 * 10 + 0.5)
 
     rays = np.zeros((depth_image.shape[0], depth_image.shape[1], 3))
     rays[:,:,0] = np.repeat([np.arange(0, depth_image.shape[1])], depth_image.shape[0], 0) * px_to_view[0, 0] + px_to_view[0, 2]
@@ -558,9 +635,9 @@ while not rospy.is_shutdown():
     plane_points[:,:,1] *= 1.0 / np.dot(rays, plane_normal) * np.dot(plane_normal, plane_point)
     plane_points[:,:,2] *= 1.0 / np.dot(rays, plane_normal) * np.dot(plane_normal, plane_point)
 
-    #cv2.imshow("plane points", plane_points * 0.5 + 0.5)
+    if show_images: cv2.imshow("plane points", plane_points * 0.5 + 0.5)
 
-    #cv2.imshow("plane points diff", (plane_points - points1) * 0.5 * 10 + 0.5)
+    if show_images: cv2.imshow("plane points diff", (plane_points - points1) * 0.5 * 10 + 0.5)
 
     plane_points_projected = plane_points.copy()
     plane_points_projected[:,:,0] /= plane_points_projected[:,:,2]
@@ -577,7 +654,7 @@ while not rospy.is_shutdown():
     normals_projected[:,:,0] /= normals_projected_norms
     normals_projected[:,:,1] /= normals_projected_norms
     normals_projected[:,:,2] /= normals_projected_norms
-    #cv2.imshow("normals projected", normals_projected * 0.5 + 0.5)
+    if show_images: cv2.imshow("normals projected", normals_projected * 0.5 + 0.5)
 
 
 
@@ -595,7 +672,7 @@ while not rospy.is_shutdown():
             int(a[1] + normals_projected[a[1], a[0], 1] * +l),
             )
         cv2.line(image, b, c, (0,255,0))
-    #cv2.imshow("test", image)
+    if show_images: cv2.imshow("test", image)
 
 
     glass_height = 0.1
@@ -647,7 +724,7 @@ while not rospy.is_shutdown():
 
         marker = visualization_msgs.msg.Marker()
         marker.header.frame_id = frame_id
-        marker.header.stamp = rospy.get_rostime()
+        #marker.header.stamp = rospy.get_rostime()
         #marker.type = visualization_msgs.msg.Marker.CYLINDER
         marker.type = visualization_msgs.msg.Marker.TRIANGLE_LIST
         marker.points = glass_mesh_marker_points
@@ -674,17 +751,47 @@ while not rospy.is_shutdown():
 
         object = moveit_msgs.msg.CollisionObject()
         object.header.frame_id = frame_id
+        marker.header.stamp = rospy.get_rostime()
         object.mesh_poses.append(marker.pose)
         object.meshes.append(glass_mesh)
         object.id = "glass_" + str(i)
         object.operation = moveit_msgs.msg.CollisionObject.ADD
+        '''
         collision_object_pub.publish(object)
+        '''
 
+        scene = moveit_msgs.msg.PlanningScene()
+        scene.is_diff = True
+        scene.robot_state.is_diff = True
+        scene.world.collision_objects.append(object)
+
+        rs = apply_planning_scene.call(scene)
+        print rs
+
+        if depth_sub is not False: depth_sub.unregister()
+        if depth_info_sub is not False: depth_info_sub.unregister()
+        if ir_sub is not False: ir_sub.unregister()
+        depth_sub = False
+        depth_info_sub = False
+        ir_sub = False
+
+        ir_image_x = False
+        depth_image_x = False
+        depth_info_x = False
+
+        result = tiago_bartender_msgs.msg.DetectGlassResult()
+        result.detected_glass = "glass_" + str(i)
+        action_server.set_succeeded(result)
+
+        break;
+
+    '''
     for i in range(len(keypoints), 10):
         object = moveit_msgs.msg.CollisionObject()
         object.header.frame_id = frame_id
         object.id = "glass_" + str(i)
         object.operation = moveit_msgs.msg.CollisionObject.REMOVE
         collision_object_pub.publish(object)
+    '''
 
     glasses_pub.publish(marker_array)

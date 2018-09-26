@@ -1,0 +1,8 @@
+<launch>
+  <node
+    pkg="actionlib"
+    type="axclient.py"
+    name="axclient"
+    args="/detect_glass_action tiago_bartender_msgs/DetectGlassAction"
+    />
+</launch>
