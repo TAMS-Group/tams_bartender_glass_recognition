@@ -272,13 +272,6 @@ while not rospy.is_shutdown():
     depth_image = depth_image_x
     depth_info = depth_info_x
 
-    #print "a"
-
-    if ir_image is False or depth_image is False or depth_info is False:
-        #print "no image"
-        rospy.sleep(0.1)
-        continue
-
     #print "b"
 
     if rospy.get_rostime() > action_timeout:
@@ -296,6 +289,11 @@ while not rospy.is_shutdown():
 
         action_server.set_aborted()
 
+        continue
+
+    if ir_image is False or depth_image is False or depth_info is False:
+        #print "no image"
+        rospy.sleep(0.1)
         continue
 
     #print "bla"
