@@ -155,7 +155,9 @@ def action_preempt_callback():
     global depth_sub, depth_info_sub, ir_sub, ir_image, depth_image, depth_info
     print "action preempted"
     print threading.current_thread()
-    action_server.set_preempted()
+    result = tiago_bartender_msgs.msg.DetectGlassResult()
+    result.error_code = tiago_bartender_msgs.msg.DetectGlassResult.PREEMPTED
+    action_server.set_preempted(result)
     if depth_sub is not False: depth_sub.unregister()
     if depth_info_sub is not False: depth_info_sub.unregister()
     if ir_sub is not False: ir_sub.unregister()
@@ -274,7 +276,7 @@ while not rospy.is_shutdown():
 
     #print "b"
 
-    if rospy.get_rostime() > action_timeout:
+    if depth_sub is not False and action_timeout is not False and rospy.get_rostime() > action_timeout:
 
         if depth_sub is not False: depth_sub.unregister()
         if depth_info_sub is not False: depth_info_sub.unregister()
@@ -283,11 +285,15 @@ while not rospy.is_shutdown():
         depth_info_sub = False
         ir_sub = False
 
+        result = tiago_bartender_msgs.msg.DetectGlassResult()
+        result.error_code = tiago_bartender_msgs.msg.DetectGlassResult.TIMEOUT_NO_GLASS_DETECTED
+        if ir_image_x is False: result.error_code = tiago_bartender_msgs.msg.DetectGlassResult.TIMEOUT_NO_IR_IMAGE_RECEIVED
+
         ir_image_x = False
         depth_image_x = False
         depth_info_x = False
 
-        action_server.set_aborted()
+        action_server.set_aborted(result)
 
         continue
 
@@ -792,6 +798,7 @@ while not rospy.is_shutdown():
 
         result = tiago_bartender_msgs.msg.DetectGlassResult()
         result.detected_glass = "glass"
+        result.error_code = tiago_bartender_msgs.msg.DetectGlassResult.SUCCESSFUL
         action_server.set_succeeded(result)
 
         break;
