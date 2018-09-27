@@ -1,0 +1,22 @@
+#!/usr/bin/env python
+
+# ros_topic_monitor
+# web_commander
+
+# /object_segmentation
+# /person_detection
+# /detect_glass_action
+
+import subprocess
+
+topics = subprocess.check_output(["rostopic", "list"]).split()
+#print topics
+
+for topic in topics:
+    if "/xtion/" in topic:
+        info = subprocess.check_output(["rostopic", "info", topic])
+        #print info
+        if "Subscribers: None" not in info:
+            print topic
+            print info
+            print
