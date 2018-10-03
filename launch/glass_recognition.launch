@@ -1,8 +1,10 @@
 <launch>
+  <arg name="testmode" default="False"/>
   <node
     pkg="tams_bartender_glass_recognition"
     type="tams_bartender_glass_recognition"
     name="detect_glass_action"
     output="screen">
+    <param name="testmode" value="$(arg testmode)"/>
   </node>
 </launch>

@@ -29,9 +29,14 @@ import moveit_msgs.msg
 
 rospack = rospkg.RosPack()
 
+rospy.init_node("ir_capture", anonymous=True)
+
 action_start_time = False
 
 action_timeout = False
+
+glass_height = 9.8 * 0.01
+glass_radius = 7.3 * 0.5 * 0.01
 
 glass_mesh_vertices = [ ]
 glass_mesh_faces = [ ]
@@ -47,8 +52,12 @@ for line in open(obj_file):
 #print glass_mesh_vertices, glass_mesh_faces
 
 show_images = False
-
 check_message_timestamps = True
+
+if rospy.get_param("~testmode", False):
+    print "testmode enabled"
+    show_images = True
+    check_message_timestamps = False
 
 glass_mesh_marker_points = [ ]
 for i in np.reshape(glass_mesh_faces, len(glass_mesh_faces) * 3):
@@ -87,8 +96,6 @@ for i in range(len(glass_mesh_faces)):
 
 bridge = CvBridge()
 
-rospy.init_node("ir_capture", anonymous=True)
-
 apply_planning_scene = rospy.ServiceProxy("apply_planning_scene", moveit_msgs.srv.ApplyPlanningScene)
 
 ir_image_x = False
@@ -103,12 +110,23 @@ def ir_callback(data):
         print(e)
         return
 
+ir_info_x = False
+def ir_info_callback(info):
+    global ir_info_x
+    if check_message_timestamps and info.header.stamp.secs < action_start_time.secs:
+        print "ir info too old"
+        return
+    ir_info_x = info
+
 glasses_pub = rospy.Publisher("glasses", visualization_msgs.msg.MarkerArray, queue_size=2)
 
 collision_object_pub = rospy.Publisher("/collision_object", moveit_msgs.msg.CollisionObject, queue_size=2)
 
-frame_id = "xtion_depth_optical_frame"
+#frame_id = "xtion_depth_optical_frame"
 #frame_id = "world"
+
+pub_image_visualization = rospy.Publisher("/glass_detection/visualization/image_rect", sensor_msgs.msg.Image, queue_size=1)
+pub_info_visualization = rospy.Publisher("/glass_detection/visualization/camera_info", sensor_msgs.msg.CameraInfo, queue_size=1)
 
 depth_image_x = False
 def depth_callback(data):
@@ -131,6 +149,7 @@ def depth_info_callback(info):
     depth_info_x = info
 
 ir_sub = False
+ir_info_sub = False
 depth_sub = False
 depth_info_sub = False
 
@@ -138,7 +157,7 @@ print threading.current_thread()
 
 action_server = actionlib.SimpleActionServer(name="detect_glass_action", ActionSpec=tiago_bartender_msgs.msg.DetectGlassAction, auto_start=False)
 def action_goal_callback():
-    global depth_sub, depth_info_sub, ir_sub, ir_image, depth_image, depth_info, action_start_time, action_timeout
+    global depth_sub, depth_info_sub, ir_sub, ir_info_sub, ir_image, depth_image, depth_info, action_start_time, action_timeout
     print "action new goal"
     print threading.current_thread()
     goal = action_server.accept_new_goal()
@@ -147,12 +166,13 @@ def action_goal_callback():
     depth_sub = rospy.Subscriber("/xtion/depth/image_rect", Image, depth_callback)
     depth_info_sub = rospy.Subscriber("/xtion/depth/camera_info", sensor_msgs.msg.CameraInfo, depth_info_callback)
     ir_sub = rospy.Subscriber("/xtion/ir/image", Image, ir_callback)
+    ir_info_sub = rospy.Subscriber("/xtion/ir/camera_info", sensor_msgs.msg.CameraInfo, ir_info_callback)
     depth_image_x = False
     ir_image_x = False
     depth_info_x = False
 action_server.register_goal_callback(action_goal_callback)
 def action_preempt_callback():
-    global depth_sub, depth_info_sub, ir_sub, ir_image, depth_image, depth_info
+    global depth_sub, depth_info_sub, ir_sub, ir_info_sub, ir_image, depth_image, depth_info
     print "action preempted"
     print threading.current_thread()
     result = tiago_bartender_msgs.msg.DetectGlassResult()
@@ -161,9 +181,11 @@ def action_preempt_callback():
     if depth_sub is not False: depth_sub.unregister()
     if depth_info_sub is not False: depth_info_sub.unregister()
     if ir_sub is not False: ir_sub.unregister()
+    if ir_info_sub is not False: ir_info_sub.unregister()
     depth_sub = False
     depth_info_sub = False
     ir_sub = False
+    ir_info_sub = False
     depth_image_x = False
     ir_image_x = False
     depth_info_x = False
@@ -224,6 +246,7 @@ params.minDistBetweenBlobs = 5
 params.filterByColor = True
 params.blobColor = 0
 
+
 params.minThreshold = 0;
 params.maxThreshold = 255;
 params.thresholdStep = 8
@@ -240,6 +263,62 @@ params.minConvexity = 0.3
 
 params.filterByInertia = True
 params.minInertiaRatio = 0.3
+
+
+'''
+params.minThreshold = 0;
+params.maxThreshold = 255;
+params.thresholdStep = 8
+
+params.filterByArea = True
+params.minArea = 50*50
+params.maxArea = 300*300
+
+params.filterByCircularity = True
+params.minCircularity = 0.3
+
+params.filterByConvexity = True
+params.minConvexity = 0.3
+
+params.filterByInertia = False
+params.minInertiaRatio = 0.3
+'''
+
+
+def sample_point(image, point):
+    x = point[0]
+    y = point[1]
+    x = int(round(x))
+    y = int(round(y))
+    if x >= image.shape[1]: x = image.shape[1] - 1
+    if y >= image.shape[0]: y = image.shape[0] - 1
+    if x < 0: x = 0
+    if y < 0: y = 0
+    return image[y, x]
+
+def lerp(x, y, f):
+    return x * (1 - f) + y * f
+
+def sample_linear(image, point):
+    x = point[0]
+    y = point[1]
+    ix = int(math.floor(x))
+    iy = int(math.floor(y))
+    fx = x - ix
+    fy = y - iy
+    return lerp(
+        lerp(
+            sample_point(image, [ix, iy]),
+            sample_point(image, [ix + 1, iy]),
+            fx
+        ),
+        lerp(
+            sample_point(image, [ix, iy + 1]),
+            sample_point(image, [ix + 1, iy + 1]),
+            fx
+        ),
+        fy
+    )
 
 detector = cv2.SimpleBlobDetector_create(params)
 
@@ -271,6 +350,7 @@ while not rospy.is_shutdown():
     if show_images: cv2.waitKey(1)
 
     ir_image = ir_image_x
+    ir_info = ir_info_x
     depth_image = depth_image_x
     depth_info = depth_info_x
 
@@ -281,9 +361,11 @@ while not rospy.is_shutdown():
         if depth_sub is not False: depth_sub.unregister()
         if depth_info_sub is not False: depth_info_sub.unregister()
         if ir_sub is not False: ir_sub.unregister()
+        if ir_info_sub is not False: ir_info_sub.unregister()
         depth_sub = False
         depth_info_sub = False
         ir_sub = False
+        ir_info_sub = False
 
         result = tiago_bartender_msgs.msg.DetectGlassResult()
         result.error_code = tiago_bartender_msgs.msg.DetectGlassResult.TIMEOUT_NO_GLASS_DETECTED
@@ -297,7 +379,7 @@ while not rospy.is_shutdown():
 
         continue
 
-    if ir_image is False or depth_image is False or depth_info is False:
+    if ir_image is False or ir_info is False or depth_image is False or depth_info is False:
         #print "no image"
         rospy.sleep(0.1)
         continue
@@ -456,6 +538,7 @@ while not rospy.is_shutdown():
         d = np.sum(mask * image) / np.sum(mask)
 
         if b <= a * 0.2 and c * 1.5 < d:
+        #if b <= a * 0.5 and c * 1.5 < d:
         #if b <= 0:
             keypoints2.append(p)
         else:
@@ -466,6 +549,8 @@ while not rospy.is_shutdown():
     #for p in keypoints:
         #print(p.pt[0], p.pt[1], p.size)
     #print
+
+    #ir_keypoint_image = image
 
     if show_images: cv2.imshow("image", image)
 
@@ -512,15 +597,17 @@ while not rospy.is_shutdown():
 
     image = (raw * 255).astype(np.uint8)
     image = cv2.drawKeypoints(image, keypoints, np.array([]), (0,255,0), cv2.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS)
-    #image = cv2.drawKeypoints(image, rejectedKeypoints, np.array([]), (0,0,255), cv2.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS)
+    image = cv2.drawKeypoints(image, rejectedKeypoints, np.array([]), (0,0,255), cv2.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS)
 
 
     #for p in keypoints:
     #    cv2.circle(image, (int(p.pt[0]), int(p.pt[1])), int(p.size * 0.5), (255,0,0), -1)
 
-    if show_images: cv2.imshow("glasses", image)
+    #if show_images: cv2.imshow("glasses", image)
 
-    if show_images: cv2.imshow("5", raw * blob_image)
+    ir_keypoint_image = image
+
+    #if show_images: cv2.imshow("5", raw * blob_image)
 
 
     image = (blob_image * 255).astype(np.uint8)
@@ -620,7 +707,8 @@ while not rospy.is_shutdown():
     #print(plane_normal)
     #print(np.dot(plane_normal, plane_points[0]))
     #print(plane_points[0])
-    plane_point = plane_normal * np.dot(plane_normal, plane_points[0])
+    #plane_point = plane_normal * np.dot(plane_normal, plane_points[0])
+    plane_point = plane_points[0]
     #print(plane_point)
     #print(np.dot(plane_normal, plane_points[0]))
     #print(np.dot(plane_normal, plane_points[1]))
@@ -669,28 +757,119 @@ while not rospy.is_shutdown():
     #print "a"
 
 
-    '''
+
     image = (blob_image * 255).astype(np.uint8)
     image = cv2.drawKeypoints(image, keypoints, np.array([]), (0,255,0), cv2.DRAW_MATCHES_FLAGS_DRAW_RICH_KEYPOINTS)
     for p in keypoints:
         l = p.size
         a = p.pt
         b = (
-            int(a[0] + normals_projected[a[1], a[0], 0] * -l),
-            int(a[1] + normals_projected[a[1], a[0], 1] * -l),
+            int(a[0] + normals_projected[int(round(a[1])), int(round(a[0])), 0] * -l),
+            int(a[1] + normals_projected[int(round(a[1])), int(round(a[0])), 1] * -l),
             )
         c = (
-            int(a[0] + normals_projected[a[1], a[0], 0] * +l),
-            int(a[1] + normals_projected[a[1], a[0], 1] * +l),
+            int(a[0] + normals_projected[int(round(a[1])), int(round(a[0])), 0] * +l),
+            int(a[1] + normals_projected[int(round(a[1])), int(round(a[0])), 1] * +l),
             )
         cv2.line(image, b, c, (0,255,0))
+        cv2.line(ir_keypoint_image, b, c, (0,255,0))
+
+
+    for p in keypoints:
+        a = p.pt
+        position = np.array([
+            a[0],
+            a[1],
+        ])
+        forward = np.array([
+            normals_projected[int(a[1]), int(a[0]), 0],
+            normals_projected[int(a[1]), int(a[0]), 1],
+        ])
+        forward *= 0.1
+        side = np.array([forward[1], -forward[0]])
+        #threshold = 0.5
+
+        search_image = cv2.GaussianBlur(blob_image.astype(float), (0, 0), 1, 1)
+
+        mask = image * 0
+        cv2.circle(mask, (int(p.pt[0]), int(p.pt[1])), int(p.size * 1.5), (1,0,0), -1)
+        mask = mask[:,:,0]
+        #threshold = (np.max(blob_image[mask > 0.5]) + np.min(blob_image[mask > 0.5])) * 0.5
+        #threshold = 0.2
+        lo = np.min(blob_image[mask > 0.5])
+        hi = np.median(blob_image[mask > 0.5])
+        threshold = lerp(lo, hi, 0.5)
+        print "lo hi threshold", lo, hi, threshold
+
+        for i in xrange(0, 1000):
+            x = position[0]
+            y = position[1]
+            x = int(round(x))
+            y = int(round(y))
+            if x >= image.shape[1]: break
+            if y >= image.shape[0]: break
+            if x < 0: break
+            if y < 0: break
+            m = sample_linear(search_image, position)
+            f = sample_linear(search_image, position + forward)
+            l = sample_linear(search_image, position + side)
+            r = sample_linear(search_image, position - side)
+            fl = sample_linear(search_image, position + side + forward)
+            fr = sample_linear(search_image, position - side + forward)
+            #print m, threshold
+            if f < threshold:
+                position += forward
+                continue
+            if fl < threshold:
+                position = position + side + forward
+                continue
+            if fr < threshold:
+                position = position - side + forward
+                continue
+            if l < r and l < m and l < threshold:
+                position += side
+                continue
+            if r < l and r < m and r < threshold:
+                position -= side
+                continue
+            break
+        print position
+
+        p.pt = (position[0], position[1])
+
+        cv2.circle(image, (int(round(position[0])), int(round(position[1]))), 20, (0,0,255), 1)
+        cv2.circle(ir_keypoint_image, (int(round(position[0])), int(round(position[1]))), 20, (0,0,255), 1)
+
+        l = 200
+        b = (
+            int(position[0] + normals_projected[int(round(a[1])), int(round(a[0])), 0] * -l),
+            int(position[1] + normals_projected[int(round(a[1])), int(round(a[0])), 1] * -l),
+            )
+        c = (
+            int(position[0] + normals_projected[int(round(a[1])), int(round(a[0])), 0] * +l),
+            int(position[1] + normals_projected[int(round(a[1])), int(round(a[0])), 1] * +l),
+            )
+        cv2.line(image, b, c, (0,0,255))
+        cv2.line(ir_keypoint_image, b, c, (0,0,255))
+
+
     if show_images: cv2.imshow("test", image)
-    '''
+    if show_images: cv2.imshow("ir_keypoints", ir_keypoint_image)
+
+    if True:
+        #ir_info.D = [0.0, 0.0, 0.0, 0.0, 0.0]
+        visualization_image_message = bridge.cv2_to_imgmsg(ir_keypoint_image, "bgr8")
+        visualization_image_message.header = ir_info.header
+        pub_image_visualization.publish(visualization_image_message)
+        pub_info_visualization.publish(ir_info)
+
+    if False:
+        visualization_image_message = bridge.cv2_to_imgmsg(np.minimum(depth_image * 0.0 + 0.7, depth_image), "passthrough")
+        visualization_image_message.header = depth_info.header
+        pub_image_visualization.publish(visualization_image_message)
+        pub_info_visualization.publish(depth_info)
 
     #print "b"
-
-    glass_height = 0.1
-    glass_radius = 0.035
 
     #v_z = np.array([0,0,1])
     v_z = -plane_normal
@@ -708,17 +887,24 @@ while not rospy.is_shutdown():
     #print("mat", mat)
 
     quat = tf.transformations.quaternion_from_matrix(mat)
+    quat = quat / np.linalg.norm(quat)
 
     #print "x"
+
+    #if show_images:
+    #    continue
+
+    frame_id = ir_info.header.frame_id
 
     marker_array = visualization_msgs.msg.MarkerArray()
     for i in range(len(keypoints)):
         p = keypoints[i]
-        l = p.size * 0.5
+        #l = p.size * 0.5
+        l = 0.0
         if p.pt[0] < 0 or p.pt[1] < 0 or p.pt[0] >= plane_points.shape[1] or p.pt[1] >= plane_points.shape[0]: continue
         #position_px = (p.pt[0], p.pt[1] + l * 0.5)
-        position_px = (p.pt[0] + normals_projected[int(p.pt[1]), int(p.pt[0]), 0] * l, p.pt[1] + normals_projected[int(p.pt[1]), int(p.pt[0]), 1] * l)
-        position_px = (int(position_px[0]), int(position_px[1]))
+        position_px = (p.pt[0] + normals_projected[int(round(p.pt[1])), int(round(p.pt[0])), 0] * l, p.pt[1] + normals_projected[int(round(p.pt[1])), int(round(p.pt[0])), 1] * l)
+        position_px = (int(round(position_px[0])), int(round(position_px[1])))
         #position_px = p.pt
         #position_px = position_px[:2]
         #print(position_px)
@@ -732,12 +918,16 @@ while not rospy.is_shutdown():
         #position += offset
         #print("position", position)
 
-        offset = position.copy()
-        offset -= plane_normal * np.dot(plane_normal, offset)
-        offset = offset / np.linalg.norm(offset) * glass_radius
-        position += offset
+        if True:
+            offset = position.copy()
+            offset -= plane_normal * np.dot(plane_normal, offset)
+            offset = offset / np.linalg.norm(offset) * glass_radius
+            position += offset
 
-        position += plane_normal * glass_height * -0.5
+        print "plane_normal", plane_normal, np.linalg.norm(plane_normal)
+
+        if True:
+            position += plane_normal * glass_height * -0.5
 
         marker = visualization_msgs.msg.Marker()
         marker.header.frame_id = frame_id
@@ -752,9 +942,9 @@ while not rospy.is_shutdown():
         #marker.scale.x = glass_radius * 2
         #marker.scale.y = glass_radius * 2
         #marker.scale.z = glass_height
-        marker.scale.x = 1.0
-        marker.scale.y = 1.0
-        marker.scale.z = 1.0
+        marker.scale.x = 1
+        marker.scale.y = 1
+        marker.scale.z = 1
         marker.pose.position.x = position[0]
         marker.pose.position.y = position[1]
         marker.pose.position.z = position[2]
@@ -782,26 +972,31 @@ while not rospy.is_shutdown():
         scene.robot_state.is_diff = True
         scene.world.collision_objects.append(object)
 
-        rs = apply_planning_scene.call(scene)
-        #print rs
+        if not show_images:
+            rs = apply_planning_scene.call(scene)
+            #print rs
 
-        if depth_sub is not False: depth_sub.unregister()
-        if depth_info_sub is not False: depth_info_sub.unregister()
-        if ir_sub is not False: ir_sub.unregister()
-        depth_sub = False
-        depth_info_sub = False
-        ir_sub = False
+        if not show_images:
 
-        ir_image_x = False
-        depth_image_x = False
-        depth_info_x = False
+            if depth_sub is not False: depth_sub.unregister()
+            if depth_info_sub is not False: depth_info_sub.unregister()
+            if ir_sub is not False: ir_sub.unregister()
+            if ir_info_sub is not False: ir_info_sub.unregister()
+            depth_sub = False
+            depth_info_sub = False
+            ir_sub = False
+            ir_info_sub = False
 
-        result = tiago_bartender_msgs.msg.DetectGlassResult()
-        result.detected_glass = "glass"
-        result.error_code = tiago_bartender_msgs.msg.DetectGlassResult.SUCCESSFUL
-        action_server.set_succeeded(result)
+            ir_image_x = False
+            depth_image_x = False
+            depth_info_x = False
 
-        break;
+            result = tiago_bartender_msgs.msg.DetectGlassResult()
+            result.detected_glass = "glass"
+            result.error_code = tiago_bartender_msgs.msg.DetectGlassResult.SUCCESSFUL
+            action_server.set_succeeded(result)
+
+            break;
 
     '''
     for i in range(len(keypoints), 10):
