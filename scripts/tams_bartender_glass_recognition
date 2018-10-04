@@ -252,7 +252,7 @@ params.maxThreshold = 255;
 params.thresholdStep = 8
 
 params.filterByArea = True
-params.minArea = 30*30
+params.minArea = 20*20
 params.maxArea = 200*200
 
 params.filterByCircularity = True
@@ -659,9 +659,19 @@ while not rospy.is_shutdown():
     normals = cv2.GaussianBlur(normals, (0, 0), 3, 3)
 
     norms = np.linalg.norm(normals, axis=2)
-    normals[:,:,0] = normals[:,:,0] / norms
-    normals[:,:,1] = normals[:,:,1] / norms
-    normals[:,:,2] = normals[:,:,2] / norms
+    #normals[:,:,0] = normals[:,:,0] / norms
+    #normals[:,:,1] = normals[:,:,1] / norms
+    #normals[:,:,2] = normals[:,:,2] / norms
+    nx = normals[:,:,0]
+    ny = normals[:,:,1]
+    nz = normals[:,:,2]
+    nmask = (norms != 0.0)
+    nx[nmask] /= norms[nmask]
+    ny[nmask] /= norms[nmask]
+    nz[nmask] /= norms[nmask]
+    normals[:,:,0] = nx
+    normals[:,:,1] = ny
+    normals[:,:,2] = nz
 
     pointlist = np.reshape(points.copy(), (points.shape[0] * points.shape[1], points.shape[2]))
     pointlist = pointlist[np.isfinite(pointlist[:,0]),:]
