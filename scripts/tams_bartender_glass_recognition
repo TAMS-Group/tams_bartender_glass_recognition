@@ -809,7 +809,7 @@ while not rospy.is_shutdown():
         lo = np.min(blob_image[mask > 0.5])
         hi = np.median(blob_image[mask > 0.5])
         threshold = lerp(lo, hi, 0.5)
-        print "lo hi threshold", lo, hi, threshold
+        #print "lo hi threshold", lo, hi, threshold
 
         for i in xrange(0, 1000):
             x = position[0]
@@ -843,7 +843,7 @@ while not rospy.is_shutdown():
                 position -= side
                 continue
             break
-        print position
+        #print position
 
         p.pt = (position[0], position[1])
 
@@ -934,7 +934,7 @@ while not rospy.is_shutdown():
             offset = offset / np.linalg.norm(offset) * glass_radius
             position += offset
 
-        print "plane_normal", plane_normal, np.linalg.norm(plane_normal)
+        #print "plane_normal", plane_normal, np.linalg.norm(plane_normal)
 
         if True:
             position += plane_normal * glass_height * -0.5
